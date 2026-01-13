@@ -1,0 +1,106 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: profiler-daemon
+  namespace: default
+  labels:
+    app: profiler-daemon
+    component: file-uploader
+spec:
+  selector:
+    matchLabels:
+      app: profiler-daemon
+  template:
+    metadata:
+      labels:
+        app: profiler-daemon
+        component: file-uploader
+    spec:
+      serviceAccountName: profiler-daemon-sa
+      containers:
+      - name: profiler-daemon
+        image: profiler-sidecar:latest
+        imagePullPolicy: IfNotPresent
+        args:
+          - "daemon"
+        env:
+          - name: GCS_BUCKET
+            valueFrom:
+              configMapKeyRef:
+                name: profiler-config
+                key: gcs-bucket
+          - name: NODE_NAME
+            valueFrom:
+              fieldRef:
+                fieldPath: spec.nodeName
+          - name: LOG_LEVEL
+            value: "debug"
+        volumeMounts:
+          - name: profiles-root
+            mountPath: /tmp/jfr
+        resources:
+          requests:
+            memory: "64Mi"
+            cpu: "100m"
+          limits:
+            memory: "256Mi"
+            cpu: "500m"
+        securityContext:
+          # Need permissions to delete files from hostPath
+          runAsUser: 0
+          runAsGroup: 0
+          capabilities:
+            add:
+              - DAC_OVERRIDE
+      volumes:
+        - name: profiles-root
+          hostPath:
+            path: /tmp/jfr
+            type: DirectoryOrCreate
+      # Run on all nodes
+      tolerations:
+        - effect: NoSchedule
+          operator: Exists
+        - effect: NoExecute
+          operator: Exists
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: profiler-daemon-sa
+  namespace: default
+  labels:
+    app: profiler-daemon
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: profiler-config
+  namespace: default
+  labels:
+    app: profiler-daemon
+data:
+  gcs-bucket: "java-profile-files-upload-demo"  # Replace with your actual GCS bucket name
+---
+# RBAC permissions if needed for GCP Workload Identity
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: profiler-daemon-role
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: profiler-daemon-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: profiler-daemon-role
+subjects:
+  - kind: ServiceAccount
+    name: profiler-daemon-sa
+    namespace: default

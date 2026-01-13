@@ -1,0 +1,90 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: java-jfr-with-sidecar
+  labels:
+    app: java-jfr-with-sidecar
+spec:
+  serviceName: java-jfr-with-sidecar
+  replicas: 1
+  selector:
+    matchLabels:
+      app: java-jfr-with-sidecar
+  template:
+    metadata:
+      labels:
+        app: java-jfr-with-sidecar
+    spec:
+      shareProcessNamespace: true
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
+        runAsUser: 111111
+        runAsGroup: 0
+      initContainers:
+        - command:
+            - sh
+            - -c
+            - chown -R 111111:0 /tmp/jfr
+          securityContext:
+            runAsUser: 0
+          volumeMounts:
+            - mountPath: /tmp/jfr
+              name: profile-storage
+              readOnly: false
+          image: busybox:latest
+          name: configure-offsetmarkers-directory
+      containers:
+        - name: java-app
+          image: profiler-app:latest
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: JAVA_OPTS
+               # modify the value below to change JFR settings to experiment with
+#              value: "-XX:StartFlightRecording=duration=1h,filename=/tmp/jfr/recording.jfr" ,maxchunksize=1M,memorysize=1M,repository=/tmp
+              value: "-Xlog:jfr+startup=off -XX:NativeMemoryTracking=summary -XX:FlightRecorderOptions=stackdepth=128 -XX:StartFlightRecording:name=main-recording,duration=1m,maxage=1m,maxsize=2M,jdk.GCPhaseParallel#enabled=false,jdk.SocketRead#enabled=false,jdk.ThreadPark#enabled=false,dumponexit=true,filename=/tmp/jfr/main-recording-%t-%p.jfr"
+          command: ["sh", "-c", "java $JAVA_OPTS -jar /app.jar"]
+          volumeMounts:
+            - name: profile-storage
+              mountPath: /tmp/jfr
+              subPathExpr: $(POD_NAME)
+
+        - name: go-sidecar
+          image: profiler-sidecar:latest
+          imagePullPolicy: Never
+          command: ["/app/profiler-sidecar", "sidecar"]
+          ports:
+            - containerPort: 8081
+              name: api
+          volumeMounts:
+            - name: profile-storage
+              mountPath: /tmp/jfr
+              subPathExpr: $(POD_NAME)
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LOG_LEVEL
+              value: "debug"
+          securityContext:
+            capabilities:
+              add:
+                - SYS_PTRACE
+        - name: sleep-sidecar
+          image: profiler-app:latest
+          imagePullPolicy: Never
+          command: ["sh", "-c", "while true; do echo 'Sleep sidecar running...'; sleep 5; done"]
+      volumes:
+        - name: profile-storage
+          hostPath:
+            path: /tmp/jfr
+            type: DirectoryOrCreate

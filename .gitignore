@@ -1,0 +1,71 @@
+# Java
+*.class
+*.jar
+*.war
+*.ear
+target/
+build/
+*.log
+
+# Gradle
+.gradle/
+gradle-app.setting
+!gradle-wrapper.jar
+!gradle-wrapper.properties
+
+# Maven
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+
+# Go
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+go.work
+go.work.sum
+vendor/
+
+# JFR Profile Files (generated at runtime)
+*.jfr
+/tmp/jfr/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+
+
+
+# Logs
+logs/
+
+# OS
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Temporary files
+*.tmp
+*.bak
+*.cache
