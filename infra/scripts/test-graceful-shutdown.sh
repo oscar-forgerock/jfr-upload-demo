@@ -117,20 +117,12 @@ list_running_profiles() {
 
 # Function to trigger graceful shutdown
 trigger_graceful_shutdown() {
-    print_info "Triggering graceful shutdown by sending SIGTERM to sidecar container..."
+    print_info "Triggering graceful shutdown by rollout restart..."
 
-    # Get the PID of the profiler-sidecar process in the container
-    SIDECAR_PID=$(kubectl exec -n ${NAMESPACE} ${POD_NAME} -c ${SIDECAR_CONTAINER} -- pgrep -f "profiler-sidecar")
-
-    if [ -z "$SIDECAR_PID" ]; then
-        print_error "Could not find sidecar process PID"
+    kubectl rollout restart -n ${NAMESPACE} sts/java-jfr-with-sidecar || {
+        print_error "Failed to restart the statefulset"
         return 1
-    fi
-
-    print_info "Sidecar PID: $SIDECAR_PID"
-
-    # Send SIGTERM to the process
-    kubectl exec -n ${NAMESPACE} ${POD_NAME} -c ${SIDECAR_CONTAINER} -- kill -TERM $SIDECAR_PID
+    }
 
     print_success "SIGTERM sent to sidecar process"
 }
