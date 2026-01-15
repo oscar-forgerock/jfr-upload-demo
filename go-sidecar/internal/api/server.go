@@ -1,14 +1,18 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
+	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/oscar-wu_pingcorp/profiler-sidecar/internal/logger"
@@ -34,17 +38,47 @@ type Response struct {
 	Data    any    `json:"data,omitempty"`
 }
 
-// Start initializes and runs the API server
+// Start initializes and runs the API server with graceful shutdown
 func Start() {
-	http.HandleFunc("/create", createProfileHandler)
-	http.HandleFunc("/stop", stopProfileHandler)
-	http.HandleFunc("/list", listProfilesHandler)
-	http.HandleFunc("/running", listRunningJFRHandler)
-	http.HandleFunc("/health", healthHandler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/create", createProfileHandler)
+	mux.HandleFunc("/stop", stopProfileHandler)
+	mux.HandleFunc("/list", listProfilesHandler)
+	mux.HandleFunc("/running", listRunningJFRHandler)
+	mux.HandleFunc("/health", healthHandler)
 
-	logger.Log.WithField("port", apiPort).Info("API server listening")
-	if err := http.ListenAndServe(":"+apiPort, nil); err != nil {
-		logger.Log.WithError(err).Fatal("Failed to start API server")
+	server := &http.Server{
+		Addr:    ":" + apiPort,
+		Handler: mux,
+	}
+
+	// Channel to listen for shutdown signals
+	shutdownChan := make(chan os.Signal, 1)
+	signal.Notify(shutdownChan, os.Interrupt, syscall.SIGTERM)
+
+	// Start server in a goroutine
+	go func() {
+		logger.Log.WithField("port", apiPort).Info("API server listening")
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			logger.Log.WithError(err).Fatal("Failed to start API server")
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-shutdownChan
+	logger.Log.Info("Shutdown signal received, stopping all JFR recordings...")
+
+	// Stop all running JFR recordings before shutting down
+	stopAllJFRRecordings()
+
+	// Gracefully shutdown the HTTP server
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(ctx); err != nil {
+		logger.Log.WithError(err).Error("Error during server shutdown")
+	} else {
+		logger.Log.Info("API server stopped gracefully")
 	}
 }
 
@@ -280,6 +314,83 @@ func listProfilesHandler(w http.ResponseWriter, r *http.Request) {
 		Message: fmt.Sprintf("Found %d profile files", len(files)),
 		Data:    files,
 	})
+}
+
+// stopAllJFRRecordings stops all running JFR recordings during graceful shutdown
+func stopAllJFRRecordings() {
+	pid, err := getJavaPID()
+	if err != nil {
+		logger.Log.WithError(err).Warn("Could not find Java process during shutdown, skipping JFR cleanup")
+		return
+	}
+
+	// Get list of running recordings
+	cmd := exec.Command("jcmd", strconv.Itoa(pid), "JFR.check")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		logger.Log.WithError(err).Warn("Could not check JFR recordings during shutdown")
+		return
+	}
+
+	// Parse recording names from JFR.check output
+	recordingNames := parseRecordingNames(string(output))
+
+	if len(recordingNames) == 0 {
+		logger.Log.Info("No active JFR recordings to stop")
+		return
+	}
+
+	logger.Log.WithField("count", len(recordingNames)).Info("Stopping active JFR recordings")
+
+	// Stop each recording
+	for _, name := range recordingNames {
+		cmd := exec.Command("jcmd", strconv.Itoa(pid), "JFR.stop", fmt.Sprintf("name=%s", name))
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			logger.Log.WithError(err).WithField("name", name).Warn("Failed to stop JFR recording")
+		} else {
+			logger.Log.WithField("name", name).Info("Successfully stopped JFR recording")
+			logger.Log.WithField("output", string(output)).Debug("JFR stop output")
+		}
+	}
+}
+
+// parseRecordingNames extracts recording names from JFR.check output
+// Example JFR.check output:
+// Recording 1: name=jfr_2026-01-15T10-30-00+00-00 (running)
+// Recording 2: name=main-recording duration=60s (running)
+func parseRecordingNames(output string) []string {
+	var names []string
+	lines := strings.Split(output, "\n")
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Look for lines that contain "Recording" and "name="
+		if strings.Contains(line, "Recording") && strings.Contains(line, "name=") {
+			// Extract the name value
+			nameStart := strings.Index(line, "name=")
+			if nameStart == -1 {
+				continue
+			}
+			nameStart += 5 // Move past "name="
+
+			// Find the end of the name (space or end of line)
+			remaining := line[nameStart:]
+			nameEnd := strings.IndexAny(remaining, " \t")
+			var name string
+			if nameEnd == -1 {
+				name = remaining
+			} else {
+				name = remaining[:nameEnd]
+			}
+
+			if name != "" {
+				names = append(names, name)
+			}
+		}
+	}
+
+	return names
 }
 
 // getJavaPID finds the PID of the running Java process

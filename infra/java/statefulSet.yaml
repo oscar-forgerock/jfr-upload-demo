@@ -42,6 +42,13 @@ spec:
           ports:
             - containerPort: 8080
               name: http
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - sh
+                  - -c
+                  - sleep 20
           env:
             - name: POD_NAME
               valueFrom:
@@ -79,10 +86,6 @@ spec:
             capabilities:
               add:
                 - SYS_PTRACE
-        - name: sleep-sidecar
-          image: profiler-app:latest
-          imagePullPolicy: Never
-          command: ["sh", "-c", "while true; do echo 'Sleep sidecar running...'; sleep 5; done"]
       volumes:
         - name: profile-storage
           hostPath:

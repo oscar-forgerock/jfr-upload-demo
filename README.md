@@ -194,6 +194,74 @@ curl http://localhost:8081/list
 curl http://localhost:8081/health
 ```
 
+## 🔄 Graceful Shutdown
+
+The Go Sidecar implements graceful shutdown to ensure JFR recordings are properly stopped when the pod is terminated (e.g., during rollout restarts).
+
+### How It Works
+
+1. **Signal Handling**: The sidecar listens for `SIGTERM` and `SIGINT` signals
+2. **Automatic Cleanup**: When a shutdown signal is received:
+   - All running JFR recordings are identified using `jcmd JFR.check`
+   - Each recording is stopped via `jcmd JFR.stop`
+   - Profile data is saved to the configured output files
+3. **HTTP Server Shutdown**: The API server gracefully shuts down with a 30-second timeout
+4. **Kubernetes Integration**: Works with the `preStop` lifecycle hook and `terminationGracePeriodSeconds` (60s)
+
+### Pod Lifecycle Configuration
+
+The StatefulSet includes a `preStop` hook that delays pod termination by 5 seconds:
+
+```yaml
+lifecycle:
+  preStop:
+    exec:
+      command:
+        - sh
+        - -c
+        - sleep 5
+```
+
+This ensures the sidecar has time to receive and process the SIGTERM signal before being forcefully terminated.
+
+### Testing Graceful Shutdown
+
+Use the provided test script to verify graceful shutdown behavior:
+
+```bash
+# Run the graceful shutdown test
+./infra/scripts/test-graceful-shutdown.sh
+```
+
+The test will:
+1. Create a long-running JFR profile (5 minutes)
+2. Verify the profile is running
+3. Send SIGTERM to the sidecar process
+4. Check logs to confirm JFR recordings were stopped
+
+### Monitoring Shutdown
+
+During pod termination, you'll see the following in the sidecar logs:
+
+```json
+{"level":"info","msg":"Shutdown signal received, stopping all JFR recordings..."}
+{"level":"info","count":2,"msg":"Stopping active JFR recordings"}
+{"level":"info","name":"jfr_2026-01-15T10-30-00+00-00","msg":"Successfully stopped JFR recording"}
+{"level":"info","msg":"API server stopped gracefully"}
+```
+
+### Rollout Restart Example
+
+When performing a rollout restart, JFR recordings are automatically stopped:
+
+```bash
+# Trigger a rollout restart
+kubectl rollout restart statefulset/java-jfr-with-sidecar
+
+# Watch the logs to see graceful shutdown
+kubectl logs -f java-jfr-with-sidecar-0 -c go-sidecar
+```
+
 ## ⚙️ Configuration
 
 ### Java Application
